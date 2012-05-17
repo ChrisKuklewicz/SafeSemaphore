@@ -1,51 +1,50 @@
 {-# LANGUAGE DeriveDataTypeable, PatternGuards #-}
-{-| Provides a fair RWLock, similar to one from Java.
-
+{-| Provides a fair RWLock, similar to one from Java, which is itself documented at
  <http://download.oracle.com/javase/7/docs/api/java/util/concurrent/locks/ReentrantReadWriteLock.html>
 
- There are complicated policy choices that have to be made.  This policy choices here are different
- from the ones for the RWLock in concurrent-extras.
+ There are complicated policy choices that have to be made.  The policy choices here are different
+from the ones for the RWLock in concurrent-extras.
+
+ The 'FairRWLock' may be in a free unlocked state, it may be in a read locked state, or it may be a
+write locked state.  Many running threads may hold the read lock and execute concurrently.  Only one
+running thread may hold the write lock.  The scheduling is a fair FIFO queue that avoids starvation.
+
+ When in the read lock state the first 'acquireWrite' will block, and subsequent 'acquireRead' and
+'acquireWrite' will queue in order.  When in the write locked state all other threads trying to
+'acquireWrite' or 'acquireRead' will queue in order.
+
+ 'FairRWLock' allows recursive write locks, and it allows recursive read locks, and it allows the
+write lock holding thread to acquire read locks.  When the current writer also holds read locks and
+then releases its last write lock it will immediately convert to the read locked state (and other
+waiting readers may join it).  When a reader acquires a write lock it will (1) release all its read
+locks, (2) wait to acquire the write lock, (3) retake the same number of read locks released in (1).
 
  The preferred way to use this API is sticking to 'new', 'withRead', and 'withWrite'.
 
- The readers and writers are always identified by their ThreadId.  Each thread that calls
- acquireRead must later call releaseRead from the same thread.  Each thread that calls acquireWrite
- must later call releaseWrite from the same thread.
+ No sequence of calling acquire on a single RWLock should lead to deadlock.  Exceptions, espcially
+from 'killThread', do not break 'withRead' or 'withWrite'.  The 'withRead' and 'withWrite' ensure
+all locks get released when exiting due to an exception.
 
- The main way to misuse a FairRWLock is to call a release without having called an acquire.  This is
- reported in the (Left error) outcomes from releaseRead and releaseWrite.  If the FairRWLock has a
- bug and finds itself in an impossible state then it will throw an error.
-
- The FairRWLock may be in a free unlocked state, it may be in a read locked state, and it may be a
- write locked state.  Many running threads may hold the read lock and execute concurrently.  Only
- one running thread may hold the write lock.  The scheduling is a fair FIFO queue that avoids
- starvation.
-
- When in the read lock state the first acquireWrite will block, and subsequent acquireRead and
- acquireWrite will queue in order.  When in the write locked state all other threads trying to
- acquireWrite or acquireRead will queue in order.
-
- FairRWLock allows recursive write locks, and it allows recursive read locks, and it allows the
- write lock holding thread to acquire read locks.  When the current writer also holds read locks and
- then releases its last write lock it will immediately convert to the read locked state (and other
- waiting readers may join it).  When a reader acquires a write lock it will (1) release all its read
- locks, (2) wait to acquire the write lock, (3) retake the same number of read locks released in
- (1).
-
- No sequence of calling acquire on a single RWLock should lead to deadlock.
+ The readers and writers are always identified by their 'ThreadId'.  Each thread that calls
+'acquireRead' must later call 'releaseRead' from the same thread.  Each thread that calls
+'acquireWrite' must later call 'releaseWrite' from the same thread. The main way to misuse a
+FairRWLock is to call a release without having called an acquire.  This is reported in the (Left
+error) outcomes from 'releaseRead' and 'releaseWrite'.  Only if the 'FairRWLock' has a bug and finds
+itself in an impossible state then it will throw an error.
 
 -}
 module Control.Concurrent.FairRWLock
   ( RWLock, RWLockException(..), RWLockExceptionKind(..),FRW(..),LockKind(..),TMap,TSet
-  , new, peekLock, checkLock
+  , new
+  , withRead, withWrite
   , acquireRead, acquireWrite
   , releaseRead, releaseWrite
-  , withRead, withWrite
+  , peekLock, checkLock
   ) where
 
 import Control.Applicative(liftA2)
 import Control.Concurrent
-import Control.Exception
+import Control.Exception(Exception,bracket_,onException,evaluate,uninterruptibleMask_,mask_,throw)
 import Control.Monad((>=>),join,forM_)
 import Data.Sequence((<|),(|>),(><),Seq,ViewL(..),ViewR(..))
 import qualified Data.Sequence as Seq(empty,viewl,viewr,breakl,spanl)
@@ -90,16 +89,16 @@ newtype RWLock = RWL (MVar LockUser)
 data RWLockException = RWLockException ThreadId RWLockExceptionKind String
   deriving (Show,Typeable)
 
--- | Operation in which error arose
+-- | Operation in which error arose, 
 data RWLockExceptionKind = RWLock'acquireWrite | RWLock'releaseWrite
                          | RWLock'acquireRead  | RWLock'releaseRead
   deriving (Show,Typeable)
 
 instance Exception RWLockException
 
--- | Observable state of holders of lock.  The W returns a pair of Ints where the first is number of
+-- | Observable state of holder(s) of lock(s).  The W returns a pair of Ints where the first is number of
 -- read locks (at least 0) and the second is the number of write locks held (at least 1).  The R
--- returns a map from thread id to the positive number of read locks held.
+-- returns a map from thread id to the number of read locks held (at least 1).
 data FRW = F | R TMap | W (ThreadId,(Int,Int)) deriving (Show)
 
 -- | Create a new RWLock which starts in a free and unlocked state.
@@ -160,23 +159,27 @@ checkLock (RWL rwlVar) = do
 --
 -- This can block but cannot be interrupted.
 releaseRead :: RWLock -> IO (Either RWLockException ())
-releaseRead (RWL rwlVar) = uninterruptibleMask_ $ do
+releaseRead (RWL rwlVar) = mask_ $ do
   me <- myThreadId
-  releaseRead' False me rwlVar -- False to indicate called from releaseRead
+  releaseRead' False me rwlVar -- False to indicate call is from releaseRead
 
--- Eleven non-impossible cases, plus one impossible case
--- Lock is Free, error or impossible
--- I have write lock, I have no read lock, error or impossible
---                  , I have at least one read lock, just decrement the counter
--- Someone else has write lock, abandoning my acquireWrite
---                            , releaseWrite called in error
--- Read lock held, I have 1 read lock, no other readers, change to FreeLock
---                                                     , change to next Writer
---                                   , remove and leave to other readers
---               , I have more than one read lock, just decrement the counter
---               , I have no read lock, abandoning with no queue is IMPOSSIBLE
---                                    , abandoning from queue past next writer
---                                    , releaseRead called in error
+-- The (abandon :: Bool) is False if called from releaseRead (from user API).
+-- The (abandon :: Bool) is True if called as handler when acquireRead[Priority] interrupted by exception (internal use).
+-- 
+-- There are 14 cases.
+-- Four ERROR cases from misuse of releaseRead, Three IMPOSSIBLE cases (from interruptions), Seven normal cases:
+-- Lock is Free, ERROR if releaseRead or IMPOSSIBLE if interrupted -- 1 and 2
+-- I have write lock, I have no read lock, ERROR if releaseRead or IMPOSSIBLE if interrupted -- 3 and 4
+--                  , I have at least one read lock, just decrement the counter  -- 5
+-- Someone else has write lock, abandoning my acquireWrite  -- 6
+--                            , releaseRead called in ERROR -- 7
+-- Read lock held, I have 1 read lock, no other readers, change to FreeLock -- 8
+--                                                     , change to next Writer -- 9
+--                                   , remove and leave to other readers -- 10
+--               , I have more than one read lock, just decrement the counter -- 11
+--               , I have no read lock, abandoning with no queue is IMPOSSIBLE  -- 12
+--                                    , abandoning from queue past next writer  -- 13
+--                                    , releaseRead called in ERROR -- 14
 releaseRead' :: Bool -> ThreadId -> MVar LockUser -> IO (Either RWLockException ())
 releaseRead' abandon me rwlVar = uninterruptibleMask_ . modifyMVar rwlVar $ \ rwd -> do
   let impossible :: Show x => String -> x -> IO a
@@ -202,24 +205,29 @@ releaseRead' abandon me rwlVar = uninterruptibleMask_ . modifyMVar rwlVar $ \ rw
             evaluate $ if Set.null rcs' then pre >< post else pre >< ((ReaderKind rcs',mblock) <| post)
 
   case rwd of
-    FreeLock | abandon ->
+    FreeLock | abandon -> {- 1 -}
       impossible "acquireRead interrupted with unlocked RWLock" me
-             | otherwise ->
+
+             | otherwise -> {- 2 -}
       err "cannot releaseRead lock from unlocked RWLock" me
 
     w@(Writer { writerID=it, readerCount=rc, queue=q }) | it==me -> do
       case rc of
-        0 | abandon -> impossible "acquireRead interrupted with write lock but not read lock" (me,it)
-          | otherwise -> err "releaseRead when holding write lock but not read lock" (me,it)
-        _ -> do
+        0 | abandon -> {- 3 -}
+              impossible "acquireRead interrupted with write lock but not read lock" (me,it)
+
+          | otherwise -> {- 4 -}
+              err "releaseRead when holding write lock but not read lock" (me,it)
+
+        _ -> do {- 5 -}
           rc' <- evaluate $ pred rc
           ret (w { readerCount=rc' })
 
-    {-ditto-}                                           | abandon -> do
+    {-ditto-}                                           | abandon -> do {- 6 -}
       q' <- dropReader q
       ret (w { queue=q' })
 
-    {-ditto-}                                           | otherwise ->
+    {-ditto-}                                           | otherwise -> {- 7 -}
       err "releaseRead called when not read locked " me
 
     r@(Readers { readerCounts=rcs,queueR=qR }) ->
@@ -228,27 +236,30 @@ releaseRead' abandon me rwlVar = uninterruptibleMask_ . modifyMVar rwlVar $ \ rw
           let rcs' = Map.delete me rcs
           if Map.null rcs'
             then case qR of
-                   Nothing ->
+                   Nothing -> {- 8 -}
                      ret FreeLock
-                   Just ((wid,mblock),q) -> do
+
+                   Just ((wid,mblock),q) -> do {- 9 -}
                      putMVar mblock ()
                      ret (Writer { writerID=wid, writerCount=1, readerCount=0, queue=q })
-            else ret (r { readerCounts=rcs' })
 
-        Just rc -> do
+            else ret (r { readerCounts=rcs' }) {- 10 -}
+
+        Just rc -> do {- 11 -}
           rc' <- evaluate $ pred rc
           rcs' <- evaluate $ Map.insert me rc' rcs
           ret (r { readerCounts=rcs' })
 
         Nothing   | abandon ->
           case qR of
-            Nothing ->
+            Nothing -> {- 12 -}
               impossible "acquireRead interrupted not holding lock and with no queue" (me,rcs)
-            Just (w,q) -> do
+
+            Just (w,q) -> {- 13 -} do
               q' <- dropReader q
               ret (r { queueR = Just (w,q') })
 
-        {-ditto-} | otherwise -> 
+        {-ditto-} | otherwise -> {- 14 -}
           err "releaseRead called with read lock held by others" (me,rcs)
 
 -- | A thread that calls acquireWrite must later call releaseWrite once for each call to acquireWrite.
@@ -258,9 +269,9 @@ releaseRead' abandon me rwlVar = uninterruptibleMask_ . modifyMVar rwlVar $ \ rw
 --
 -- This can block but cannot be interrupted.
 releaseWrite :: RWLock -> IO (Either RWLockException ())
-releaseWrite (RWL rwlVar) = uninterruptibleMask_ $ do
+releaseWrite (RWL rwlVar) = mask_ $ do
   me <- myThreadId
-  releaseWrite' False me rwlVar  -- False to indicate called from releaseWrite
+  releaseWrite' False me rwlVar  -- False to indicate call is from releaseWrite
 
 -- Nine non-impossible cases, plus one impossible case
 -- Lock is Free
@@ -298,6 +309,7 @@ releaseWrite' abandon me rwlVar = uninterruptibleMask_ . modifyMVar rwlVar $ \ r
   case rwd of
     FreeLock | abandon ->
      impossible "acquireWrite interrupted with unlocked RWLock" me
+
              | otherwise ->
      err "cannot releaseWrite lock from unlocked RWLock" me
 
@@ -366,13 +378,13 @@ releaseWrite' abandon me rwlVar = uninterruptibleMask_ . modifyMVar rwlVar $ \ r
     isReader (ReaderKind {},_) = True
     isReader _ = False
 
--- Six cases:
+-- Six cases below:
 -- Lock is Free
 -- I already have write lock
--- Someone else has write lock, mblock
+-- Someone else has write lock, leads to mblock
 -- I alread have read lock
 -- Someone else has read lock, no pending write lock
--- Someone else has read lock, there is a pending write lock, mblock
+-- Someone else has read lock, there is a pending write lock, leads to mblock
 
 -- | Any thread may call acquireRead (even ones holding write locks).  This read lock may be
 -- acquired multiple times, requiring an identical number of releaseRead calls.
@@ -397,7 +409,8 @@ acquireRead (RWL rwlVar) = mask_ . join . modifyMVar rwlVar $ \ rwd -> do
       rc' <- evaluate $ succ rc
       return ( w { readerCount=rc' }
              , return () )
-                                                        | otherwise -> do
+
+    {- ditto -}                                         | otherwise -> do
       (q',mblock) <- enterQueueR q me
       return ( w { queue = q' }
              , safeBlock mblock )
@@ -434,6 +447,7 @@ acquireRead (RWL rwlVar) = mask_ . join . modifyMVar rwlVar $ \ rwd -> do
     addMe rcs | Set.member me rcs = error (imp "enterQueueR.addMe when already in set" me)
               | otherwise = return (Set.insert me rcs)
 
+-- Five cases.
 -- This is not exported.  This has uninterruptibleMask_.  It is used to restore read locks released
 -- during acquireWrite when acquireWrite is called while holding read locks.  If this acquireWrite
 -- upgrade is going well then this thread holds the Writer lock and acquireReadPriority is identical
@@ -486,13 +500,13 @@ acquireReadPriority (RWL rwlVar) = uninterruptibleMask_ . join . modifyMVar rwlV
     addMe rcs | Set.member me rcs = error (imp "enterQueueL.addMe when already in set" me)
               | otherwise = return (Set.insert me rcs)
 
--- Six cases:
+-- Six cases below:
 -- Lock is Free
 -- I already have write lock
--- Someone else has write lock
+-- Someone else has write lock, leads to waiting
 -- I already have read lock
--- Someone else has read lock, there is no pending write lock
--- Someone else has read lock, there is a pending write lock
+-- Someone else has read lock, there is no pending write lock, wait
+-- Someone else has read lock, there is a pending write lock, wait
 
 -- | Any thread may call acquireWrite (even ones holding read locks, but see below for interrupted
 -- behavior).  This write lock may be acquired multiple times, requiring an identical number of
@@ -565,7 +579,7 @@ imp s x = "FairRWLock impossible error: "++s++" : "++show x
 
 subtle bug #1:
 
-When converting from a read lock holding 'rc' read locks to a also holding a write lock, I first wrote:
+When converting from a read lock holding rc > 0 read locks to also holding a write lock, I first wrote:
 
 replicateM_ rc (releaseRead rwl >>= either throw return)
 acquireWrite rwl

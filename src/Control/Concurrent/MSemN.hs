@@ -35,10 +35,16 @@ module Control.Concurrent.MSemN
     ,peekAvail
     ) where
 
+import Prelude( Integral,Eq,IO,Int,Integer,Maybe(Just,Nothing),Num((+),(-)),Bool(False,True)
+              , return,id,const,fmap,snd,maybe
+              , (.),(<=),($),($!) )
+import Control.Concurrent.MVar( MVar
+                              , withMVar,modifyMVar,modifyMVar_,newMVar
+                              , newEmptyMVar,putMVar,takeMVar,tryTakeMVar )
+import Control.Exception(bracket,bracket_,uninterruptibleMask_,onException,evaluate,mask_)
 import Control.Monad(when)
-import Control.Concurrent.MVar(MVar,withMVar,modifyMVar,modifyMVar_,newMVar,newEmptyMVar,putMVar,takeMVar,tryTakeMVar)
-import Control.Exception(bracket,uninterruptibleMask_,onException,evaluate,mask_)
 import Data.Typeable(Typeable)
+import Data.Word(Word)
 
 {- 
 
@@ -77,9 +83,10 @@ data MSemN i = MSemN { mSem :: !(MVar (MS i))  -- ^ Used to lock access to state
 -- better localize errors.
 new :: Integral i => i -> IO (MSemN i)
 {-# SPECIALIZE new :: Int -> IO (MSemN Int) #-}
+{-# SPECIALIZE new :: Word -> IO (MSemN Word) #-}
 {-# SPECIALIZE new :: Integer -> IO (MSemN Integer) #-}
 new initial = do
-  newMS <- newMVar $! (MS { avail = initial
+  newMS <- newMVar $! (MS { avail = initial  -- this forces initial
                           , headWants = Nothing })
   newQueueWait <- newMVar ()
   newHeadWait <- newEmptyMVar
@@ -90,11 +97,12 @@ new initial = do
 -- | 'with' takes a quantity of the semaphore to take and hold while performing the provided
 -- operation.  'with' ensures the quantity of the sempahore cannot be lost if there are exceptions.
 -- This uses 'bracket' to ensure 'wait' and 'signal' get called correctly.
-with :: Integral i => (MSemN i) -> i -> IO a -> IO a
+with :: Integral i => MSemN i -> i -> IO a -> IO a
 {-# SPECIALIZE with :: MSemN Int -> Int -> IO a -> IO a #-}
+{-# SPECIALIZE with :: MSemN Word -> Word -> IO a -> IO a #-}
 {-# SPECIALIZE with :: MSemN Integer -> Integer -> IO a -> IO a #-}
-with _ 0 = id
-with m wanted = bracket (wait m wanted)  (\() -> signal m wanted) . const
+with _ 0 = id -- this also forces with to be strict in wanted
+with m wanted = bracket_ (wait m wanted)  (signal m wanted)
 
 -- | 'withF' takes a pure function and an operation.  The pure function converts the available
 -- quantity to a pair of the wanted quantity and a returned value.  The operation takes the result
@@ -103,8 +111,13 @@ with m wanted = bracket (wait m wanted)  (\() -> signal m wanted) . const
 --
 -- Note: A long running pure function will block all other access to the 'MSemN' while it is
 -- evaluated.
-withF :: Integral i => (MSemN i) -> (i -> (i,b)) -> ((i,b) -> IO a) -> IO a
+withF :: Integral i 
+      => MSemN i
+      -> (i -> (i,b))
+      -> ((i,b) -> IO a)
+      -> IO a
 {-# SPECIALIZE withF :: MSemN Int -> (Int -> (Int,b)) -> ((Int,b) -> IO a) -> IO a #-}
+{-# SPECIALIZE withF :: MSemN Word -> (Word -> (Word,b)) -> ((Word,b) -> IO a) -> IO a #-}
 {-# SPECIALIZE withF :: MSemN Integer -> (Integer -> (Integer,b)) -> ((Integer,b) -> IO a) -> IO a #-}
 withF m f = bracket (waitF m f)  (\(wanted,_) -> signal m wanted)
 
@@ -115,10 +128,11 @@ withF m f = bracket (waitF m f)  (\(wanted,_) -> signal m wanted)
 -- greater than or equal to zero.  If 'wait' is interrupted then no quantity is lost.  If 'wait'
 -- returns without interruption then it is known that each earlier waiter has definitely either been
 -- interrupted or has retured without interruption.
-wait :: Integral i => (MSemN i) -> i -> IO ()
+wait :: Integral i => MSemN i -> i -> IO ()
 {-# SPECIALIZE wait :: MSemN Int -> Int -> IO () #-}
+{-# SPECIALIZE wait :: MSemN Word -> Word -> IO () #-}
 {-# SPECIALIZE wait :: MSemN Integer -> Integer -> IO () #-}
-wait _ 0 = return ()
+wait _ 0 = return () -- this also forces wait to be strict in wanted
 wait m wanted = fmap snd $ waitF m (const (wanted,()))
 
 -- | 'waitWith' takes the 'MSemN' and a pure function that takes the available quantity and computes the
@@ -135,8 +149,9 @@ wait m wanted = fmap snd $ waitF m (const (wanted,()))
 --
 -- Note: A long running pure function will block all other access to the 'MSemN' while it is
 -- evaluated.
-waitF :: Integral i => (MSemN i) -> (i -> (i,b)) -> IO (i,b)
+waitF :: Integral i => MSemN i -> (i -> (i,b)) -> IO (i,b)
 {-# SPECIALIZE waitF :: MSemN Int -> (Int -> (Int,b)) -> IO (Int,b) #-}
+{-# SPECIALIZE waitF :: MSemN Word -> (Word -> (Word,b)) -> IO (Word,b) #-}
 {-# SPECIALIZE waitF :: MSemN Integer -> (Integer -> (Integer,b)) -> IO (Integer,b) #-}
 waitF m f = mask_ . withMVar (queueWait m) $ \ () -> do
   (out@(wanted,_),mustWait) <- modifyMVar (mSem m) $ \ ms -> do
@@ -173,10 +188,11 @@ waitF m f = mask_ . withMVar (queueWait m) $ \ () -> do
 -- 'signal' may block, but it cannot be interrupted, which allows it to dependably restore value to
 -- the 'MSemN'.  All 'signal', 'signalF', 'peekAvail', and the head waiter may momentarily block in a
 -- fair FIFO manner.
-signal :: Integral i => (MSemN i) -> i -> IO ()
+signal :: Integral i => MSemN i -> i -> IO ()
 {-# SPECIALIZE signal :: MSemN Int -> Int -> IO () #-}
+{-# SPECIALIZE signal :: MSemN Word -> Word -> IO () #-}
 {-# SPECIALIZE signal :: MSemN Integer -> Integer -> IO () #-}
-signal _ 0 = return ()
+signal _ 0 = return () -- this also forces signal to be strict in 'size'
 signal m size = uninterruptibleMask_ $ fmap snd $ signalF m (const (size,()))
 
 -- | Instead of providing a fixed change to the available quantity, 'signalF' applies a provided
@@ -193,8 +209,12 @@ signal m size = uninterruptibleMask_ $ fmap snd $ signalF m (const (size,()))
 --
 -- Note: A long running pure function will block all other access to the 'MSemN' while it is
 -- evaluated.
-signalF :: Integral i => (MSemN i) -> (i -> (i,b)) -> IO (i,b)
+signalF :: Integral i
+        => MSemN i
+        -> (i -> (i,b))
+        -> IO (i,b)
 {-# SPECIALIZE signalF :: MSemN Int -> (Int -> (Int,b)) -> IO (Int,b) #-}
+{-# SPECIALIZE signalF :: MSemN Word -> (Word -> (Word,b)) -> IO (Word,b) #-}
 {-# SPECIALIZE signalF :: MSemN Integer -> (Integer -> (Integer,b)) -> IO (Integer,b) #-}
 signalF m f = mask_ . modifyMVar (mSem m) $ \ ms -> do
   -- Nothing below blocks, not even the putMVar
@@ -217,7 +237,8 @@ signalF m f = mask_ . modifyMVar (mSem m) $ \ ms -> do
 --
 -- A version of 'peekAvail' that joins the FIFO queue of 'wait' and 'waitF' can be acheived by
 -- \"waitF m (\x -> (0,x))\"
-peekAvail :: Integral i => (MSemN i) -> IO i
+peekAvail :: Integral i => MSemN i -> IO i
 {-# SPECIALIZE peekAvail :: MSemN Int -> IO Int #-}
+{-# SPECIALIZE peekAvail :: MSemN Word -> IO Word #-}
 {-# SPECIALIZE peekAvail :: MSemN Integer -> IO Integer #-}
 peekAvail m = withMVar (mSem m) (return . avail)
