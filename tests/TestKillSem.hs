@@ -91,6 +91,7 @@ import Control.Concurrent.QSem
 import Control.Concurrent.QSemN
 import qualified Control.Concurrent.MSem as MSem
 import qualified Control.Concurrent.MSemN as MSemN
+import qualified Control.Concurrent.MSemN2 as MSemN2
 import Control.Concurrent.MVar
 import Test.HUnit
 import System.Exit
@@ -182,6 +183,7 @@ testsQ = TestList . (testOldSV:) . map test $
 testsM = TestList . (testNewSV:) . map test $
   [ testSem "MSem" MSem.new MSem.wait MSem.signal
   , testSem "MSemN" MSemN.new (flip MSemN.wait 1) (flip MSemN.signal 1)
+  , testSem "MSemN2" MSemN2.new (flip MSemN2.wait 1) (flip MSemN2.signal 1)
   ]
 
 -- This is run by "cabal test"
