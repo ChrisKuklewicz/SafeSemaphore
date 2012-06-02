@@ -1,7 +1,9 @@
 Name:                SafeSemaphore
 Version:             0.9.0
 Synopsis:            Much safer replacement for QSemN, QSem, and SampleVar
-Description:         This provides a much safer semaphore than the QSem in base.  Performance has not been compared.  In the source is a tests/TestKillSem.hs executable (run by cabal test) that shows the problem with QSem.
+Description:         This provides a much safer semaphore than the QSem, QSemN, SampleVar in base.
+                     Those base modules are not exception safe and can be broken by killThread.
+                     See <https://github.com/ChrisKuklewicz/SafeSemaphore> for more details.
 Homepage:            https://github.com/ChrisKuklewicz/SafeSemaphore
 License:             BSD3
 License-file:        LICENSE
