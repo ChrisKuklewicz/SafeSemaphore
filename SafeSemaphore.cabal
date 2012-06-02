@@ -2,7 +2,7 @@ Name:                SafeSemaphore
 Version:             0.9.0
 Synopsis:            Much safer replacement for QSemN, QSem, and SampleVar
 Description:         This provides a much safer semaphore than the QSem in base.  Performance has not been compared.  In the source is a tests/TestKillSem.hs executable (run by cabal test) that shows the problem with QSem.
-Homepage:            http://hackage.haskell.org/package/SafeSemaphore
+Homepage:            https://github.com/ChrisKuklewicz/SafeSemaphore
 License:             BSD3
 License-file:        LICENSE
 Author:              Chris Kuklewicz <haskell@list.mightyreason.com>
