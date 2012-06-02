@@ -4,8 +4,7 @@ SafeSemaphore
 SafeSemaphore is a Haskell library replacing non-exception safe libraries like QSem, QSemN, SampleVar.
 
 Tests (tests/TestKillSem.hs) are included to demonstrate the bugs that occur when blocked threads
-are stopped with killThread.  The [GHC ticket
-#3160](http://hackage.haskell.org/trac/ghc/ticket/3160) reports this bad behavior of the usual
+are stopped with killThread.  The [GHC ticket #3160](http://hackage.haskell.org/trac/ghc/ticket/3160) reports this bad behavior of the usual
 QSem QSemN.
 
 Guide to modules
