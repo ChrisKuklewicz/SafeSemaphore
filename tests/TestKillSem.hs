@@ -92,6 +92,7 @@ import Control.Concurrent.QSemN
 import qualified Control.Concurrent.MSem as MSem
 import qualified Control.Concurrent.MSemN as MSemN
 import qualified Control.Concurrent.MSemN2 as MSemN2
+import qualified Control.Concurrent.SSem as SSem
 import Control.Concurrent.MVar
 import Test.HUnit
 import System.Exit
@@ -112,6 +113,7 @@ stop (t,m) = do killThread t
                 takeMVar m
 
 -- True if test passed, False if test failed
+-- This expects FIFO semantics for the waiters
 testSem :: Integral n 
         => String
         -> (n -> IO a) 
@@ -121,6 +123,7 @@ testSem :: Integral n
 testSem name new wait signal = do
   putStrLn ("\n\nTest "++ name)
   q <- new 0
+
   putStrLn "0: forkIO wait thread 1"
   (t1,m1) <- fork $ do
     wait q `onException` (putStrLn "1: wait interrupted")
@@ -130,12 +133,15 @@ testSem name new wait signal = do
   putStrLn "0: signal q #1"
   signal q
   delay
+
   putStrLn "0: forkIO wait thread 2"
   (t2,m2) <- fork $ do
     wait q `onException` (putStrLn "2: wait interrupted UNEXPECTED")
     putStrLn "2: wait done"
-  putStrLn "0: forkIO wait thread 3"
+  delay
+
   result <- newEmptyMVar
+  putStrLn "0: forkIO wait thread 3"
   (t3,m3) <- fork $ do
     wait q `onException` (putStrLn "3: wait interrupted (QUANTITY LOST) FAIL" >> putMVar result False)
     putStrLn "3: wait done (QUANTITY CONSERVED) PASS"
@@ -143,6 +149,7 @@ testSem name new wait signal = do
   putStrLn "0: signal q #2"
   signal q
   delay
+
   putStrLn "0: stop thread 2"
   stop (t2,m2)
   putStrLn "0: stop thread 3"
@@ -172,6 +179,53 @@ testSV name newEmpty read write = do
       putStrLn "0: write sv #2 returned, PASS"
       return True
 
+-- True if test passed, False if test failed
+-- This does not expect FIFO semantics for the waiters, uses getValue instead
+testSSem :: Integral n 
+        => String
+        -> (n -> IO a) 
+        -> (a->IO ()) 
+        -> (a -> IO ()) 
+        -> (a -> IO Int)
+        -> IO Bool
+testSSem name new wait signal getValue = do
+  putStrLn ("\n\nTest "++ name)
+  q <- new 0
+
+  putStrLn "0: forkIO wait thread 1"
+  (t1,m1) <- fork $ do
+    wait q `onException` (putStrLn "1: wait interrupted")
+    putStrLn "1: wait done UNEXPECTED"
+  putStrLn "0: stop thread 1"
+  stop (t1,m1)
+  putStrLn "0: signal q #1"
+  signal q
+  delay
+
+  putStrLn "0: forkIO wait thread 2"
+  (t2,m2) <- fork $ do
+    wait q `onException` (putStrLn "2: wait interrupted")
+    putStrLn "2: wait done"
+  delay
+
+  putStrLn "0: forkIO wait thread 3"
+  (t3,m3) <- fork $ do
+    wait q `onException` (putStrLn "3: wait interrupted")
+    putStrLn "3: wait done"
+  delay
+
+  putStrLn "0: signal q #2"
+  signal q
+  delay
+
+  putStrLn "0: stop thread 2"
+  stop (t2,m2)
+  putStrLn "0: stop thread 3"
+  stop (t3,m3)
+  r <- getValue q
+  putStrLn $ "Final Value "++show r
+  return (r==0)
+
 testOldSV = test $ testSV "SampleVar" newEmptySampleVar readSampleVar writeSampleVar
 testNewSV = test $ testSV "MSampleVar" newEmptySV readSV writeSV
 
@@ -184,6 +238,7 @@ testsM = TestList . (testNewSV:) . map test $
   [ testSem "MSem" MSem.new MSem.wait MSem.signal
   , testSem "MSemN" MSemN.new (flip MSemN.wait 1) (flip MSemN.signal 1)
   , testSem "MSemN2" MSemN2.new (flip MSemN2.wait 1) (flip MSemN2.signal 1)
+  , testSSem "SSem" SSem.new SSem.wait SSem.signal SSem.getValue
   ]
 
 -- This is run by "cabal test"

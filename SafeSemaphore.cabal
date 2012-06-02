@@ -1,5 +1,5 @@
 Name:                SafeSemaphore
-Version:             0.8.1
+Version:             0.9.0
 Synopsis:            Much safer replacement for QSemN, QSem, and SampleVar
 Description:         This provides a much safer semaphore than the QSem in base.  Performance has not been compared.  In the source is a tests/TestKillSem.hs executable (run by cabal test) that shows the problem with QSem.
 Homepage:            http://hackage.haskell.org/package/SafeSemaphore
@@ -19,7 +19,10 @@ Library
                    Control.Concurrent.MSemN2
                    Control.Concurrent.MSampleVar
                    Control.Concurrent.FairRWLock
-  Build-depends:  base < 5, containers
+                   Control.Concurrent.SSem
+                   Control.Concurrent.STM.SSem
+  Other-modules:   Control.Concurrent.STM.SSemInternals
+  Build-depends:  base < 5, containers, stm
 
 Test-Suite TestSafeSemaphore
   type:          exitcode-stdio-1.0
