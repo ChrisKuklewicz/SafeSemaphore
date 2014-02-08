@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE DeriveDataTypeable, CPP #-}
 --
 -- Module      :  Control.Concurrent.MSampleVar
 -- Copyright   :  (c) Chris Kuklewicz 2011
@@ -30,7 +30,7 @@ module Control.Concurrent.MSampleVar
 import Control.Monad(void,join)
 import Control.Concurrent.MVar(MVar,newMVar,newEmptyMVar,tryTakeMVar,takeMVar,putMVar,withMVar,isEmptyMVar)
 import Control.Exception(mask_)
-import Data.Typeable(Typeable1(typeOf1),mkTyCon,mkTyConApp)
+import Data.Typeable
 
 -- |
 -- Sample variables are slightly different from a normal 'MVar':
@@ -60,11 +60,17 @@ import Data.Typeable(Typeable1(typeOf1),mkTyCon,mkTyConApp)
 -- value possible while still guaranteeing progress.
 data MSampleVar a = MSampleVar { readQueue :: MVar ()
                                , lockedStore :: MVar (MVar a) }
-  deriving (Eq)
+  deriving ( Eq
+#if __GLASGOW_HASKELL__ >= 707
+           , Typeable
+#endif
+           )
 
+#if __GLASGOW_HASKELL__ < 707
 instance Typeable1 MSampleVar where
   typeOf1 _ = mkTyConApp tc []
     where tc = mkTyCon "MSampleVar"
+#endif
 
 
 -- | 'newEmptySV' allocates a new MSampleVar in an empty state.  No futher
