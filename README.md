@@ -7,6 +7,8 @@ Tests (tests/TestKillSem.hs) are included to demonstrate the bugs that occur whe
 are stopped with killThread.  The [GHC ticket #3160](http://hackage.haskell.org/trac/ghc/ticket/3160) reports this bad behavior of the usual
 QSem QSemN.
 
+Version 0.10.0 is the update to work with GHC 7.8 (deriving Typeable).
+
 Guide to modules
 ================
 
