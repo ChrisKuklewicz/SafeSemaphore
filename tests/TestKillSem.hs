@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {- some output from log of "cabal test", three old modules fail, three new modules pass:
 
 Test SampleVar
@@ -96,7 +97,9 @@ import qualified Control.Concurrent.SSem as SSem
 import Control.Concurrent.MVar
 import Test.HUnit
 import System.Exit
+#if !MIN_VERSION_base(4,7,0)
 import Control.Concurrent.SampleVar
+#endif
 import Control.Concurrent.MSampleVar as MSV
 import System.Timeout
 
@@ -114,11 +117,11 @@ stop (t,m) = do killThread t
 
 -- True if test passed, False if test failed
 -- This expects FIFO semantics for the waiters
-testSem :: Integral n 
+testSem :: Integral n
         => String
-        -> (n -> IO a) 
-        -> (a->IO ()) 
-        -> (a -> IO ()) 
+        -> (n -> IO a)
+        -> (a->IO ())
+        -> (a -> IO ())
         -> IO Bool
 testSem name new wait signal = do
   putStrLn ("\n\nTest "++ name)
@@ -181,11 +184,11 @@ testSV name newEmpty read write = do
 
 -- True if test passed, False if test failed
 -- This does not expect FIFO semantics for the waiters, uses getValue instead
-testSSem :: Integral n 
+testSSem :: Integral n
         => String
-        -> (n -> IO a) 
-        -> (a->IO ()) 
-        -> (a -> IO ()) 
+        -> (n -> IO a)
+        -> (a->IO ())
+        -> (a -> IO ())
         -> (a -> IO Int)
         -> IO Bool
 testSSem name new wait signal getValue = do
@@ -226,7 +229,11 @@ testSSem name new wait signal getValue = do
   putStrLn $ "Final Value "++show r
   return (r==0)
 
+#if !MIN_VERSION_base(4,7,0)
 testOldSV = test $ testSV "SampleVar" newEmptySampleVar readSampleVar writeSampleVar
+#else
+testOldSV = test $ putStrLn "Cannot test SampleVar on GHC 7.8 because it was removed" >> return False
+#endif
 testNewSV = test $ testSV "MSampleVar" newEmptySV readSV writeSV
 
 testsQ = TestList . (testOldSV:) . map test $
