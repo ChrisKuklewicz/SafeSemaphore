@@ -36,7 +36,7 @@ module Control.Concurrent.MSemN2
     ) where
 
 import Prelude( Integral,Eq,IO,Int,Integer,Maybe(Just,Nothing),Num((+),(-)),Bool(False,True)
-              , return,id,const,fmap,snd,seq
+              , return,const,fmap,snd,seq
               , (.),(<=),($),($!) )
 import Control.Concurrent.MVar( MVar
                               , withMVar,modifyMVar,newMVar

@@ -1,5 +1,5 @@
 Name:                SafeSemaphore
-Version:             0.10.0
+Version:             0.10.1
 Synopsis:            Much safer replacement for QSemN, QSem, and SampleVar
 Description:         This provides a much safer semaphore than the QSem, QSemN, SampleVar in base.
                      Those base modules are not exception safe and can be broken by killThread.
